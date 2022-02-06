@@ -153,3 +153,4 @@ cython_debug/
 
 samples
 deep_speaker.h5
+*.pkl
