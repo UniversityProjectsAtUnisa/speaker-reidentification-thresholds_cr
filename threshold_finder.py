@@ -1,5 +1,8 @@
 # noqa
-import os  # nopep8
+import argparse
+import itertools
+import os
+import random  # nopep8
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"  # nopep8
 
 from pathlib import Path
@@ -10,12 +13,18 @@ from identification.utils import batch_cosine_similarity, dist2id
 import numpy as np
 from tqdm import tqdm
 import pickle
+import random
+import logging
+
+random.seed(1)
 
 TEST_SIZE = 6
 
 SAMPLE_RATE = 16000
 STRICT_TH = 0.75
-PERMESSIVE_TH = 0.50
+STRICT_TARGET = 0.8
+PERMISSIVE_TH = 0.5
+PERMISSIVE_TARGET = 1.0
 
 PROJ_PATH = Path(__file__).absolute().parent
 MODEL_PATH = PROJ_PATH.joinpath("deep_speaker.h5")
@@ -81,15 +90,17 @@ def score(preds, y_test):
 
 
 def i2e_to_dataset(i2e, type="strict"):
+    assert type == "strict" or type == "permissive", type
+    X, y = [], []
     if type == "strict":
-        X, y = [], []
         for k, embeddings_list in i2e.items():
             X.extend(embeddings_list)
             y.extend([k] * len(embeddings_list))
-        return X, y
     elif type == "permissive":
-        pass
-    return [], []
+        for k, embeddings_list in i2e.items():
+            X.append(embeddings_list)
+            y.append([k] * len(embeddings_list))
+    return X, y
 
 
 def train_strict_th(X_train, y_train, target_score=1.0, mode="avg", rounds=10):
@@ -102,7 +113,7 @@ def train_strict_th(X_train, y_train, target_score=1.0, mode="avg", rounds=10):
             y_train.insert(i, _y)
             X_train.insert(i, sample)
         ans = score(preds, y_train)
-        print(f"{th=} score={ans}")
+        logging.debug(f"{th=} score={ans}")
         return ans
 
     left = 0.0
@@ -120,14 +131,6 @@ def train_strict_th(X_train, y_train, target_score=1.0, mode="avg", rounds=10):
             right = middle
     return best_th
 
-    ###
-    for th in ths:
-        cur = try_threshold(th)
-        if cur > best_score:
-            best = th
-        print(f"{th=} score={cur}")
-    return best
-
 
 def test_strict_th(i2e_test, X_train, y_train, strict_th, mode):
     X_test, y_test = i2e_to_dataset(i2e_test, "strict")
@@ -135,17 +138,66 @@ def test_strict_th(i2e_test, X_train, y_train, strict_th, mode):
     return score(preds, y_test)
 
 
+def train_permissive_th(X_train, y_train, target_score=1.0, mode="avg", rounds=10):
+    def try_threshold(th):
+        preds = []
+        for X, y in zip(X_train, y_train):
+            for i in range(len(X)):
+                sample, _y = X.pop(i), y.pop(i)
+                ans = predict_single(sample, X, y, th, mode)
+                preds.append(ans)
+                y.insert(i, _y)
+                X.insert(i, sample)
+        ans = score(preds, list(itertools.chain(*y_train)))
+        logging.debug(f"{th=} score={ans}")
+        return ans
+
+    left = 0.0
+    right = 1.0
+    best_th = 0.0
+    for _ in tqdm(range(rounds), desc="Optimizing threshold"):
+        middle = (left+right)/2
+        middle_score = try_threshold(middle)
+
+        if middle_score >= target_score:
+            left = middle
+            if middle > best_th:
+                best_th = middle
+        else:
+            right = middle
+    return best_th
+
+
+def test_permissive_th(i2e_test, X_train, y_train, permissive_th, mode):
+    X_test, y_test = i2e_to_dataset(i2e_test, "permissive")
+    preds = []
+    for X, y, samples in zip(X_train, y_train, X_test):
+        ans = predict(samples, X, y, permissive_th, mode)
+        preds.extend(ans)
+    return score(preds, list(itertools.chain(*y_test)))
+
+
 def split_i2e(i2e, test_size):
     i2e_train, i2e_test = {}, {}
     for k, embeddings in i2e.items():
+        random.shuffle(embeddings)
         i2e_train[k] = embeddings[test_size:]
         i2e_test[k] = embeddings[:test_size]
     return i2e_train, i2e_test
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--log", dest="loglevel", default="INFO")
+    args = parser.parse_args()
+    numeric_level = getattr(logging, args.loglevel.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError(f"Invalid log level: {args.loglevel}")
+    logging.basicConfig(format='%(levelname)s | %(asctime)s :: %(message)s', level=numeric_level)
+
     cache_file = 'i2e.pkl'
     if os.path.exists(cache_file):
+        logging.debug(f"Reading cached i2e from {cache_file}")
         with open(cache_file, "rb") as f:
             identity_to_embeddings = pickle.load(f)
     else:
@@ -157,13 +209,14 @@ def main():
         # LOAD AUDIO DATA FROM WAV SAMPLES
         r = sr.Recognizer()
         identity_to_audio = {k: [load_audio(str(s_path), r) for s_path in v] for k, v in identity_to_files.items()}
-        # print({k: [e.shape for e in v] for k, v in identity_to_audio.items()})
+        logging.debug({k: [e.shape for e in v] for k, v in identity_to_audio.items()})
 
         # LOAD EMBEDDINGS DATA FROM AUDIO DATA
         ai = AudioIdentifier(MODEL_PATH)
         identity_to_embeddings = {k: [ai.extract_embeddings(e)[0] for e in v] for k, v in identity_to_audio.items()}
-        # print({k: [e.shape for e in v] for k, v in identity_to_embeddings.items()})
+        logging.debug({k: [e.shape for e in v] for k, v in identity_to_embeddings.items()})
 
+        logging.debug(f"Saving cached i2e to {cache_file}")
         with open(cache_file, "wb") as f:
             pickle.dump(identity_to_embeddings, f)
 
@@ -172,15 +225,22 @@ def main():
     X_train, y_train = i2e_to_dataset(i2e_train, "strict")
 
     modes = ['avg', 'max', 'min']
+
+    logging.debug(f'Optimizing strict threshold with target {STRICT_TARGET}')
     for mode in modes:
-        strict_th = train_strict_th(X_train, y_train, 0.9, mode)
+        strict_th = train_strict_th(X_train, y_train, STRICT_TARGET, mode)
         s = test_strict_th(i2e_test, X_train, y_train, strict_th, mode)
         print(f"{mode=} {strict_th=} scored {s}")
-    # permissive_th = train_permissive_th(i2e_train)
-    # test_permissive_th(i2e_test)
+
+    logging.debug(f'Optimizing permissive threshold with target {PERMISSIVE_TARGET}')
+    for mode in modes:
+        X_train, y_train = i2e_to_dataset(i2e_train, "permissive")
+        permissive_th = train_permissive_th(X_train, y_train, target_score=PERMISSIVE_TARGET, mode=mode)
+        s = test_permissive_th(i2e_test, X_train, y_train, strict_th, mode)
+        print(f"{mode=} {permissive_th=} scored {s}")
 
     # CREATE TRAINING DATA
-    X_train, y_train, X_test, y_test = create_datasets(identity_to_embeddings, TEST_SIZE)
+    # X_train, y_train, X_test, y_test = create_datasets(identity_to_embeddings, TEST_SIZE)
 
 
 if __name__ == '__main__':
