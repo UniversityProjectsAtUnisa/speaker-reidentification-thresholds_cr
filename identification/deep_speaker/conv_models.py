@@ -114,7 +114,6 @@ class DeepSpeakerModel:
 
     def conv_and_res_block(self, inp, filters, stage):
         conv_name = 'conv{}-s'.format(filters)
-        # TODO: why kernel_regularizer?
         o = Conv2D(filters,
                    kernel_size=5,
                    strides=2,
