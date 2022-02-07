@@ -21,9 +21,7 @@ random.seed(1)
 TEST_SIZE = 6
 
 SAMPLE_RATE = 16000
-STRICT_TH = 0.75
 STRICT_TARGET = 0.8
-PERMISSIVE_TH = 0.5
 PERMISSIVE_TARGET = 1.0
 
 PROJ_PATH = Path(__file__).absolute().parent
@@ -142,12 +140,16 @@ def train_permissive_th(X_train, y_train, target_score=1.0, mode="avg", rounds=1
     def try_threshold(th):
         preds = []
         for X, y in zip(X_train, y_train):
+            local_preds = []
             for i in range(len(X)):
                 sample, _y = X.pop(i), y.pop(i)
                 ans = predict_single(sample, X, y, th, mode)
-                preds.append(ans)
+                local_preds.append(ans)
                 y.insert(i, _y)
                 X.insert(i, sample)
+            local_score = score(local_preds, y)
+            logging.debug(f"{y[0]} scored {local_score}")
+            preds.extend(local_preds)
         ans = score(preds, list(itertools.chain(*y_train)))
         logging.debug(f"{th=} score={ans}")
         return ans
