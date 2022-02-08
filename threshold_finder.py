@@ -241,9 +241,6 @@ def main():
         s = test_permissive_th(i2e_test, X_train, y_train, strict_th, mode)
         print(f"{mode=} {permissive_th=} scored {s}")
 
-    # CREATE TRAINING DATA
-    # X_train, y_train, X_test, y_test = create_datasets(identity_to_embeddings, TEST_SIZE)
-
 
 if __name__ == '__main__':
     main()
